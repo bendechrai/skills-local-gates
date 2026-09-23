@@ -14,7 +14,16 @@ Rules that hold for every provider:
   folklore.
 - **Change nothing else.** Jobs, matrices, caches and secrets stay
   exactly as they are, so the manual run and the restored automatic run
-  are the same run.
+  are the same run. The file also keeps earning its place as the
+  specification `bin/preflight.gates.sh` mirrors - images, service
+  containers, environment variables and commands. Change one and change
+  the other in the same commit, or "green" starts meaning two things.
+- **Read the jobs before mirroring them.** A step wired to a
+  third-party action is not automatically doing what its name says: an
+  action pinned to a retired image can fail to parse its own rules and
+  still exit 0, so the workflow reports a scan it never ran. Running the
+  tool's current CLI locally is the fix, and finding this is a reason to
+  mirror deliberately rather than transcribe.
 - **Check the manual run still works** once after the edit. A trigger
   edit that made the workflow unparseable is silent until somebody
   needs it.

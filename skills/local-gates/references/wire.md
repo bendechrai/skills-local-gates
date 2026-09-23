@@ -75,6 +75,8 @@ What the runner guarantees the file:
 | `PREFLIGHT_NET` | a docker network created for this run, removed after |
 | `PREFLIGHT_ID` | name prefix for throwaway containers; the runner force-removes anything still named with it on exit |
 | `PREFLIGHT_COMMIT` / `PREFLIGHT_TREE` | the commit and tree being gated |
+| `PREFLIGHT_REPO` | the checkout, for the rare gate that cannot use the archive |
+| `PREFLIGHT_MARKER_DIR` | where smoke certifications are written |
 
 What the file must define:
 
@@ -85,6 +87,11 @@ What the file must define:
   cleanup of its own, catch the failure (`cmd || status=1`) and
   `return "$status"` at the end - errexit would otherwise skip the
   cleanup.
+- optionally `preflight_precheck`, run once before any gate. It is
+  where "`node_modules` / the generated type declaration / the build
+  directory must not be committed" belongs: the archive's whole promise
+  is that it holds only tracked files, and a generated file somebody
+  committed defeats that silently.
 
 Rules worth keeping while editing:
 

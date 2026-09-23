@@ -35,9 +35,12 @@
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"
-GIT_DIR="$(git rev-parse --absolute-git-dir)"
+# The *common* git dir, not this worktree's: a linked worktree checking out
+# the same tree has already been proven by whichever one ran the suite, and
+# markers are keyed on content, so they belong to the repository.
+GIT_COMMON_DIR="$(cd "$(git rev-parse --git-common-dir)" && pwd)"
 GATES_FILE="bin/preflight.gates.sh"
-MARKER_DIR="$GIT_DIR/local-gates-ok"
+MARKER_DIR="$GIT_COMMON_DIR/local-gates-ok"
 SMOKE_GATE="smoke"
 
 commit="HEAD"
@@ -180,6 +183,12 @@ fi
 
 export PREFLIGHT_ID PREFLIGHT_NET PREFLIGHT_DIR
 export PREFLIGHT_COMMIT="$COMMIT_SHA" PREFLIGHT_TREE="$TREE_SHA"
+# The checkout and the marker directory, for the rare gate that cannot run
+# against the archive at all - a browser suite that drives a dev server is
+# serving the working tree, not the export. Such a gate has to refuse
+# unless the working tree matches the commit, or it certifies code that
+# was never exercised.
+export PREFLIGHT_REPO="$REPO_ROOT" PREFLIGHT_MARKER_DIR="$MARKER_DIR"
 
 banner "preflight $SHORT_SHA"
 note "tree    $TREE_SHA"
@@ -189,10 +198,23 @@ note "gates   ${GATES[*]}"
 MARKER="$MARKER_DIR/$TREE_SHA"
 run_started="$(date +%s)"
 smoke_state="not run"
+gate_log=()
 
 elapsed() {
   local secs=$(( $(date +%s) - $1 ))
   printf '%dm%02ds' $(( secs / 60 )) $(( secs % 60 ))
+}
+
+# One line per gate at the end, printed on the way out whether the run
+# passed or failed: "which gate is eating the twelve minutes" is the
+# question that decides what to make faster.
+summary() {
+  local line
+  printf '\n%stimings%s\n' "$C_BOLD" "$C_RST"
+  for line in ${gate_log[@]+"${gate_log[@]}"}; do
+    printf '  %s\n' "${line//|/  }"
+  done
+  printf '  %-12s  %-9s  %s\n' "TOTAL" "" "$(elapsed "$run_started")"
 }
 
 run_gate() {
@@ -201,11 +223,22 @@ run_gate() {
   banner "$gate"
   if ( cd "$ARCHIVE_DIR" && "$gate" ); then
     good "$gate passed in $(elapsed "$started")"
+    gate_log+=("$(printf '%-12s|%-9s|%s' "$gate" "ok" "$(elapsed "$started")")")
     return 0
   fi
   printf '\n%s    FAILED%s %s after %s\n' "$C_RED" "$C_RST" "$gate" "$(elapsed "$started")" >&2
+  gate_log+=("$(printf '%-12s|%-9s|%s' "$gate" "FAILED" "$(elapsed "$started")")")
   return 1
 }
+
+# An optional assertion the gates file may define, run once before any
+# gate. It is where "this generated file must not be committed" belongs:
+# the point of the archive is that it holds only tracked files, and a
+# generated file that has been committed silently defeats that.
+if declare -F preflight_precheck >/dev/null; then
+  banner "precheck"
+  ( cd "$ARCHIVE_DIR" && preflight_precheck ) || die "precheck failed"
+fi
 
 for gate in "${GATES[@]}"; do
   wanted "$gate" || continue
@@ -230,7 +263,7 @@ for gate in "${GATES[@]}"; do
       warn "Waived: smoke - ${LOCAL_GATES_SKIP_SMOKE_REASON:-requested with LOCAL_GATES_SKIP_SMOKE}"
       continue
     fi
-    run_gate "$gate" || die "$gate failed - $SHORT_SHA is not safe to push"
+    run_gate "$gate" || { summary; die "$gate failed - $SHORT_SHA is not safe to push"; }
     if [ -n "${LOCAL_GATES_NO_MARKER:-}" ]; then
       smoke_state="passed (not certified)"
     else
@@ -241,10 +274,10 @@ for gate in "${GATES[@]}"; do
     continue
   fi
 
-  run_gate "$gate" || die "$gate failed - $SHORT_SHA is not safe to push"
+  run_gate "$gate" || { summary; die "$gate failed - $SHORT_SHA is not safe to push"; }
 done
 
 banner "preflight passed"
 note "commit  $SHORT_SHA"
 note "smoke   $smoke_state"
-note "total   $(elapsed "$run_started")"
+summary

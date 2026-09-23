@@ -30,6 +30,19 @@ fi
 # point at the same content (a branch and the tag on it, a fast-forwarded
 # main), and running the whole suite twice over identical bytes buys
 # nothing.
+# A waiver is loud on purpose. Somebody who sets the variable in their
+# shell profile and forgets is the failure mode, and a line that scrolls
+# past unnoticed does not protect against it.
+if [ "${LOCAL_GATES_SKIP_SMOKE:-}" = "1" ]; then
+  {
+    echo "****************************************************************"
+    echo "  WAIVED: smoke - LOCAL_GATES_SKIP_SMOKE=1 is set."
+    echo "  The slow suite will NOT run for this push."
+    echo "  Report it as: Waived: smoke - <reason>"
+    echo "****************************************************************"
+  } >&2
+fi
+
 seen_trees=""
 
 run_for() {

@@ -94,9 +94,14 @@ proving, because the commands differ per stack and the proof does not.
    archive**, with the archive as the working directory, and exports
    `PREFLIGHT_NET` (a docker network created for the run),
    `PREFLIGHT_ID` (name prefix for throwaway containers, reaped by the
-   runner), `PREFLIGHT_DIR`, `PREFLIGHT_COMMIT` and `PREFLIGHT_TREE`.
+   runner), `PREFLIGHT_DIR`, `PREFLIGHT_COMMIT`, `PREFLIGHT_TREE`,
+   `PREFLIGHT_REPO` (the checkout) and `PREFLIGHT_MARKER_DIR`. An
+   optional `preflight_precheck` function runs once before any gate -
+   the place for "this generated file must not be committed", which is
+   the assertion that keeps the archive meaning what it claims.
    Lift the commands from the repo's DoD and its CI workflow - the
-   workflow is the working record of what the gates actually are.
+   workflow is the working record of what the gates actually are, and
+   it stays in the repo as the specification the gates file mirrors.
 5. **Install the hooks:** `bin/setup-git-hooks.sh`. It sets
    `core.hooksPath` to `.githooks`; nothing is copied into `.git/hooks`,
    so there is no second copy to drift. Each clone runs it once, because
@@ -191,6 +196,12 @@ is a thing to justify in the summary, not a habit.
   something the archive does not contain. Check the gate is using
   `$PWD` (the archive) rather than a path back into the repository, and
   that the file it wants is tracked.
+- **A suite that cannot run against the archive.** Some browser suites
+  drive the running dev stack through a real hostname, and that stack
+  serves the working tree. Such a gate may use `$PREFLIGHT_REPO`, but it
+  must refuse unless the working tree matches `$PREFLIGHT_COMMIT` (no
+  diff, no untracked files). Otherwise the marker certifies a tree the
+  suite never exercised, which is worse than no marker.
 - **Docker containers pile up.** A gate started one outside the
   `$PREFLIGHT_ID` prefix, so the runner could not reap it. Name every
   throwaway container `"$PREFLIGHT_ID-<role>"`.

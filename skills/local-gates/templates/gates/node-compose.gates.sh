@@ -25,9 +25,16 @@
 # gate immediately. Where a gate has cleanup of its own to do, it catches
 # the failure with `|| status=1` and returns that at the end.
 
+# Images are pinned to exactly what the hosted workflow used. Changing one
+# here without changing the workflow is how the two quietly stop agreeing
+# about what "green" means - and the workflow is still the specification
+# this file mirrors, which is the reason it is kept rather than deleted.
 APP_DIR="webapp"
-NODE_IMAGE="node:22-bookworm-slim"
+NODE_IMAGE="node:22-bookworm"
 PG_IMAGE="postgres:17"
+OSV_IMAGE="ghcr.io/google/osv-scanner:v2.0.1"
+SEMGREP_IMAGE="semgrep/semgrep:latest"
+GITLEAKS_IMAGE="zricethezav/gitleaks:latest"
 PLAYWRIGHT_IMAGE="mcr.microsoft.com/playwright:v1.63.0-noble"
 DB_NAME="app"
 db_url_for() { echo "postgresql://postgres:postgres@$1:5432/$DB_NAME"; }
@@ -89,6 +96,18 @@ start_postgres() {
 
 stop_container() { docker rm -f "$1" >/dev/null 2>&1 || true; }
 
+# Optional, run once before any gate. The whole point of the archive is
+# that it holds only tracked files; a generated file somebody committed
+# defeats that silently, and the gate it would have broken is the one
+# that then passes here and fails on a clean clone.
+preflight_precheck() {
+  [ -d "$APP_DIR" ] || { echo "the archive has no $APP_DIR/ - wrong commit?" >&2; return 1; }
+  for generated in "$APP_DIR/node_modules" "$APP_DIR/next-env.d.ts" "$APP_DIR/.next"; do
+    [ -e "$generated" ] && { echo "$generated is committed; it is meant to be generated" >&2; return 1; }
+  done
+  return 0
+}
+
 # ------------------------------------------------------------------
 # 1. deps - the install a fresh clone would get, from the lockfile only
 # ------------------------------------------------------------------
@@ -113,6 +132,11 @@ deps() {
   # Provenance coverage is not complete yet, so this is a trip-wire in the
   # log rather than a gate of its own.
   node_run "npm audit signatures || true"
+  # An `npm install` can leave a lockfile tree npm itself considers
+  # inconsistent, without complaining at the time. It surfaces later as a
+  # failed SBOM step or a refusal to `npm ci` on a clean machine, so it is
+  # cheaper to ask here.
+  node_run "npm ls --all --package-lock-only >/dev/null"
 }
 
 # ------------------------------------------------------------------
@@ -146,12 +170,13 @@ tests() {
 # ------------------------------------------------------------------
 # 5. secrets - nothing credential-shaped in the pushed content
 # ------------------------------------------------------------------
-# --no-git because the archive has no history: this gate proves the bytes
-# about to reach the remote are clean. Scanning full history is a
-# different job, run once when the repo is wired rather than per push.
+# `gitleaks dir` rather than `detect`: the archive has no history, and
+# this gate proves the bytes about to reach the remote are clean.
+# Scanning full history is a different job, worth running once when the
+# repo is wired rather than on every push.
 secrets() {
-  docker run --rm -v "$PWD:/repo:ro" zricethezav/gitleaks:latest \
-    detect --no-git --source /repo --redact --no-banner
+  docker run --rm -v "$PWD:/repo:ro" "$GITLEAKS_IMAGE" \
+    dir /repo --redact --no-banner
 }
 
 # ------------------------------------------------------------------
@@ -163,17 +188,26 @@ secrets() {
 # forward with an `overrides` entry, never an allowlist entry in the
 # scanner - an allowlist hides the advisory from the next person too.
 vulns() {
-  docker run --rm -v "$PWD:/repo:ro" ghcr.io/google/osv-scanner:latest \
-    scan source --lockfile "/repo/$APP_DIR/package-lock.json"
+  docker run --rm -v "$PWD:/repo:ro" "$OSV_IMAGE" \
+    --lockfile="/repo/$APP_DIR/package-lock.json"
   node_run "npm audit --audit-level=high"
 }
 
 # ------------------------------------------------------------------
 # 7. sast - static analysis on the pushed content
 # ------------------------------------------------------------------
+# The current CLI, not the semgrep GitHub Action: that action pulls a
+# retired image from 2023 which cannot parse today's registry rules. It
+# dies on the first rule with a MEDIUM severity and the wrapper still
+# exits 0, so a workflow using it has been reporting success without
+# scanning anything. A local gate that did the same would be worse than
+# no gate.
+#
+# --severity ERROR is the "no HIGH severity findings" bar. Drop it to see
+# the WARNING and INFO findings as well.
 sast() {
-  docker run --rm -v "$PWD:/src:ro" -w /src semgrep/semgrep:latest \
-    semgrep scan --error --quiet --metrics=off \
+  docker run --rm -v "$PWD:/src:ro" -w /src "$SEMGREP_IMAGE" \
+    semgrep scan --error --quiet --metrics=off --severity ERROR \
       --config p/default \
       --config p/typescript \
       --config p/react \
@@ -231,6 +265,19 @@ migrations() {
 # It runs against a production build rather than the dev server: a dev
 # server compiles on demand, and the first request to a cold route is slow
 # enough to look like a flaky test.
+#
+# If a project's suite genuinely cannot run against the archive - it
+# drives the running dev stack through a public hostname, or needs
+# services only compose brings up - the gate may drive the working tree
+# instead, using $PREFLIGHT_REPO. It must then refuse unless the working
+# tree matches the commit:
+#
+#   git -C "$PREFLIGHT_REPO" diff --quiet "$PREFLIGHT_COMMIT" -- \
+#     && [ -z "$(git -C "$PREFLIGHT_REPO" ls-files --others --exclude-standard)" ] \
+#     || { echo "the working tree differs from the commit being gated" >&2; return 1; }
+#
+# Without that check the marker certifies a tree the suite never
+# exercised, which is worse than having no marker at all.
 smoke() {
   local db url app ready="" status=0
   db="$(start_postgres smoke-db)" || return 1
