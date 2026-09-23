@@ -11,9 +11,15 @@ remove it when the project outgrows that.
 
     npx skills add bendechrai/skills-local-gates
 
+Add `-g` to install it for the whole machine rather than the current
+project, which is the usual way to run it: the skill is about how a
+machine gates its pushes, not about one repo.
+
 ## Remove
 
     npx skills remove local-gates
+
+Add `-g` if that is how it was installed.
 
 Removing the skill does not unwire a repo. Ask Claude to revert the
 repo first ("we are out of MVP mode, put CI back") - the skill knows how
