@@ -1,0 +1,12 @@
+# Nothing here is built, so this file is mostly about editor and OS litter.
+.DS_Store
+*.swp
+*~
+
+# Node, in case a consumer adds tooling here later.
+node_modules/
+skills-lock.json
+
+# Local scratch
+/tmp/
+*.log

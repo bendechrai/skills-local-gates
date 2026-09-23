@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+#
+# pre-push - run every Definition-of-Done gate before anything leaves this
+# machine. Installed by bin/setup-git-hooks.sh, which points
+# core.hooksPath at .githooks.
+#
+# git hands this hook one line per ref being pushed on stdin:
+#
+#     <local ref> <local sha> <remote ref> <remote sha>
+#
+# and the local sha is what the remote is about to hold, so that is what
+# gets tested - not the working tree, and not HEAD, which may be somewhere
+# else entirely when several branches go up in one push.
+#
+# To bypass in a genuine emergency:
+#
+#     git push --no-verify     # and be ready to say why
+#
+set -euo pipefail
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+RUNNER="$REPO_ROOT/bin/preflight.sh"
+
+if [ ! -x "$RUNNER" ]; then
+  echo "pre-push: $RUNNER is missing or not executable" >&2
+  exit 1
+fi
+
+# Commits whose tree has already been proven in this push. Two refs often
+# point at the same content (a branch and the tag on it, a fast-forwarded
+# main), and running the whole suite twice over identical bytes buys
+# nothing.
+seen_trees=""
+
+run_for() {
+  local sha="$1" tree
+  tree="$(git rev-parse "$sha^{tree}")"
+  case " $seen_trees " in
+    *" $tree "*) return 0 ;;
+  esac
+  seen_trees="$seen_trees $tree"
+
+  echo "pre-push: gating $(git rev-parse --short "$sha")"
+  "$RUNNER" "$sha" || {
+    echo "pre-push: refusing the push - gates failed for $(git rev-parse --short "$sha")" >&2
+    exit 1
+  }
+}
+
+saw_refs=""
+while read -r local_ref local_sha _remote_ref _remote_sha; do
+  [ -n "${local_ref:-}" ] || continue
+  saw_refs=1
+
+  # An all-zero local sha is a delete. There is no content to gate, and
+  # refusing one would make it impossible to tidy up a branch. It still
+  # counts as input, so a push that only deletes runs nothing at all
+  # rather than falling through to the HEAD case below.
+  case "$local_sha" in
+    *[!0]*) ;;
+    *) continue ;;
+  esac
+
+  # A tag points at content that was gated when its commit was pushed;
+  # re-running the suite for the annotation is noise. Peel it anyway so a
+  # tag pushed before its branch still gets covered.
+  case "$local_ref" in
+    refs/tags/*) local_sha="$(git rev-parse "$local_sha^{commit}")" ;;
+  esac
+
+  run_for "$local_sha"
+done
+
+# Run by hand, or by a client that feeds no refs: gate HEAD so the hook is
+# still useful as `\.githooks/pre-push < /dev/null`.
+if [ -z "$saw_refs" ]; then
+  run_for "$(git rev-parse HEAD)"
+fi
+
+echo "pre-push: gates green"
